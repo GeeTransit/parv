@@ -54,7 +54,7 @@ class Visitor:
             ty = f"{module}.{name}"
         else:
             ty = name
-        return f"{ty}({self.token!r}, mode={self.mode!r})"
+        return f"<{ty} mode={self.mode!r}>"
 
     @classmethod
     def define(

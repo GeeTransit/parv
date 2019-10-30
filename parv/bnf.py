@@ -14,7 +14,7 @@ from .visitor import Visitor
 class BNFParser(Parser):
     """
     Parser for mBNF / PEG grammars. See "docs.python.org" for examples.
-    `.get()` and `.tokens_from()` return list[Token] for use with BNFVisitor.
+    `.run()` and `.tokens_from()` return list[Token] for use with BNFVisitor.
     """
 
     # New mBNF rules (keep base class's rules too)
@@ -23,7 +23,8 @@ class BNFParser(Parser):
         'line': choice(
             ref('rule'),
             ref('comment'),
-            ref('newline')
+            ref('newline'),
+            ref('eof'),
         ),
         'rule': join(
             ref('name'),

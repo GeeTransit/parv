@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from .creator import *
 from .req import pop, tramp, find, current, reset
+from .token import Token
 
 
 # --- Parser class for mBNF / PEG ---
@@ -20,6 +21,8 @@ class Parser:
 
     Note that `Parser.rules` comes preset with the following:
 
+        "thing": Parser.thing,
+        "eof": match(EOFError),
         "tab": literal("\t"),
         "space": literal(" "),
         "newline": literal("\n"),
@@ -29,82 +32,56 @@ class Parser:
         "uletter": choice_from("ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
         "symbol": choice_from("!@#$%^&*(),./?<>{}[]:;|\\-=_+`~"),
 
-    Here's an example for a simple calculator:
+    Here's an calculator using the class oriented method:
 
-        calc = Parser.from_peg('''
-        expr ::= sum
-        sum ::= product (("+", "-") product)*
-        product ::= value (("*", "/") value)*
-        value ::= digit+ / "(" expr ")"
-        ''')
-
-    Here's an alternative using the class oriented method:
-
-        class calc(Parser):
-            @Parser.define
-            async def expr(self):
-                return await ref("sum")
-            @Parser.define
-            async def sum(self):
-                return await join(
+        from parv import *
+        class Calculator(Parser):
+            rules = {
+                **Parser.rules,
+                "expr": ref("sum"),
+                "sum": join(
                     ref("product"),
                     zero_more(join(
-                        choice(literal("+"), literal("-")),
+                        choice_from("+-"),
                         ref("product"),
                     )),
-                )
-            @Parser.define
-            async def product(self):
-                return await join(
+                ),
+                "product": join(
                     ref("value"),
                     zero_more(join(
-                        choice_from(literal("*"), literal("/")),
+                        choice_from("*/"),
                         ref("value"),
                     )),
-                )
-            @Parser.define
-            async def value(self):
-                return await choice(
+                ),
+                "value": choice(
                     one_more(ref("digit")),
                     join(
                         literal("("),
                         ref("expr"),
                         literal(")"),
                     ),
-                )
-
-    Here's the same below the surface:
-
-        calc = Parser("expr", {
-            "expr": ref("sum"),
-            "sum": join(
-                ref("product"),
-                zero_more(join(
-                    choice_from("+-"),
-                    ref("product"),
-                )),
-            ),
-            "product": join(
-                ref("value"),
-                zero_more(join(
-                    choice_from("*/"),
-                    ref("value"),
-                )),
-            ),
-            "value": choice(
-                one_more(ref("digit")),
-                join(
-                    literal("("),
-                    ref("expr"),
-                    literal(")"),
                 ),
-            ),
-        })
+            }
+
+    Here's an example usage of the calculator:
+
+        >>> calc = Calculator(main="expr")
+        >>> calc.tokens_from("5+3")
+        [<parv.token.Token name='expr' items=['sum']>, <parv.token.Token
+        name="<class 'EOFError'>" items=["<class 'EOFError'>"]>]
     """
+
+    # Thing implementation
+    async def _thing_coro():
+        item = await pop()
+        return [Token("thing", item)]
+    thing = Creator("thing", "match", _thing_coro)
 
     # Preset rules for convenience
     #
     # In mBNF:
+    # thing ::= #(Parser.thing)
+    # eof ::= #(EOFError)
     # tab ::= "\t"
     # space ::= " "
     # newline ::= "\n"
@@ -126,6 +103,8 @@ class Parser:
     #     | ":" | ";" | "|" | "\\" | "-" | "=" | "_" | "+" | "`" | "~"
     # )
     rules: dict[str, Callable] = {
+        "thing": thing,
+        "eof": match(EOFError),
         "tab": literal("\t"),
         "space": literal(" "),
         "newline": literal("\n"),
@@ -179,7 +158,8 @@ class Parser:
         return self
 
     def __exit__(self, ty, val, tb):
-        self.close()
+        if self._buffer is not None:
+            self.run(eof=True)
 
     @classmethod
     def define(
@@ -222,27 +202,10 @@ class Parser:
         """
         return type(self)(self.main, self.rules.copy())
 
-    def close(self) -> None:
+    def run(self, item: Any = None, *, eof: bool = False) -> list[Token]:
         """
-        Close the parser and prevent future usage.
-        """
-        self.index = 0
-        self._buffer = None
-        self._parse = None
-
-    def add(self, data: Any) -> None:
-        """
-        Add `data` into the buffer.
-        """
-        if self._buffer is None:
-            raise RuntimeError("Parser was closed. Create a new one.")
-        if self._parse is None:
-            self._parse = self._make_parser_runtime()
-        self._buffer.extend(data)
-
-    def get(self) -> list[Token]:
-        """
-        Return the tokens parsed from the buffer.
+        Return the tokens parsed from `item`. If `eof`, send an EOFError
+        and close the parser.
         """
         if self._buffer is None:
             raise RuntimeError("Parser was closed. Create a new one.")
@@ -250,21 +213,39 @@ class Parser:
             raise RuntimeError('No specified main rule.')
         if self._parse is None:
             self._parse = self._make_parser_runtime()
-        return self._parse()
 
-    def tokens_from(self, data: Iterable) -> list[Token]:
+        # Result list[Token]
+        tokens = []
+
+        if item is not None:
+            self._buffer.append(item)
+            tokens.extend(self._parse())
+
+        if eof:
+            self._buffer.append(EOFError)
+            tokens.extend(self._parse())
+
+            # Close parser
+            self.index = 0
+            self._buffer = None
+            self._parse = None
+
+        return tokens
+
+    def tokens_from(self, data: Iterable, *, eof: bool = True) -> list[Token]:
         """
         Return the tokens parsed from each value in `data`.
         """
         tokens = []
         for d in data:
-            self.add(d)
-            tokens.extend(self.get())
+            tokens.extend(self.run(d))
+        if eof:
+            tokens.extend(self.run(eof=True))
         return tokens
 
     def _make_parser_runtime(self):
-        # Factory function for the main rule (first rule)
-        mainref = ref(self.main)
+        # Factory function for the main rule (first rule) and EOFError
+        main_creator = choice(ref(self.main), match(EOFError))
 
         # Stack of running coroutines
         stack = []
@@ -314,7 +295,7 @@ class Parser:
         }
 
         # Add the initial coroutine
-        stack.append(mainref())
+        stack.append(main_creator())
 
         # Main parser loop. This controls all coroutine trampolines and
         # provides backtracking functions.
@@ -353,7 +334,7 @@ class Parser:
                         tokens.extend(e.value)
 
                         # Restart the stack with the main rule
-                        stack.append(mainref())
+                        stack.append(main_creator())
                         value = None
 
                     else:
@@ -367,6 +348,10 @@ class Parser:
 
                     # Check if main rule failed / errored
                     if not stack:
+                        # End future use of the parser
+                        self._buffer = None
+
+                        # Re-raise the error
                         raise
 
                     # Check if exception was the same as last time ._.

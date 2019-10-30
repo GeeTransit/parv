@@ -34,7 +34,7 @@ class Token:
         else:
             ty = name
         name = self.name
-        items = [t.name for t in self.items] if self.isleaf else [str(self.items[0])]
+        items = [str(self.items[0])] if self.isleaf else [t.name for t in self.items]
         frozen = " frozen=True" if self.frozen else ""
         return f"<{ty} {name=} {items=}{frozen}>"
 
@@ -78,7 +78,7 @@ class Token:
     def isleaf(self):
         if self.frozen:
             return True
-        elif len(self.items) == 1 and isinstance(self.items[0], str):
+        elif len(self.items) == 1 and not isinstance(self.items[0], Token):
             return True
         else:
             return False
